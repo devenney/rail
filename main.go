@@ -31,8 +31,8 @@ type Message struct {
 func (r Message) String() string {
 	s := fmt.Sprintf("[%s v%s]:", r.Timestamp, r.Version)
 
-	if r.UO.UO != "" {
-		s = fmt.Sprintf("%s\n\t%s", s, r.UO)
+	if r.UR.UO != "" {
+		s = fmt.Sprintf("%s\n\t%s", s, r.UR)
 	}
 
 	return s
@@ -45,8 +45,8 @@ type UniqueResponse struct {
 }
 
 // String provides a user-friendly representation of a UniqueResponse
-func (uo UpdateOrigin) String() string {
-	s := fmt.Sprintf("\nUpdate Origin: %s\n\n%s", uo.UO, uo.TS)
+func (ur UniqueResponse) String() string {
+	s := fmt.Sprintf("\nUpdate Origin: %s\n\n%s", ur.UO, ur.TS)
 
 	return s
 }
@@ -94,11 +94,15 @@ type Location struct {
 	WTA string `xml:"wta,attr"`
 	WTD string `xml:"wtd,attr"`
 	WTP string `xml:"wtp,attr"`
+
+	Arrival   Event `xml:"arr"`
+	Departure Event `xml:"dep"`
+	Pass      Event `xml:"pas"`
 }
 
 // String provides a user-friendly representation of a Timestamp
 func (l Location) String() string {
-	s := fmt.Sprintf("\n\t-- %s", l.TPL)
+	s := fmt.Sprintf("\n-- %s", l.TPL)
 
 	if l.PTA != "" {
 		s = fmt.Sprintf("%s | Public Time Arrive: %s", s, l.PTA)
@@ -120,7 +124,95 @@ func (l Location) String() string {
 		s = fmt.Sprintf("%s | Working Time Pass: %s", s, l.WTP)
 	}
 
+	if l.Arrival != (Event{}) {
+		s = fmt.Sprintf("%s\n\t** Arr: %s", s, l.Arrival)
+	}
+
+	if l.Departure != (Event{}) {
+		s = fmt.Sprintf("%s\n\t** Dep: %s", s, l.Departure)
+	}
+
+	if l.Pass != (Event{}) {
+		s = fmt.Sprintf("%s\n\t** Pass: %s", s, l.Pass)
+	}
+
+	if l.Delay() > 0 {
+		s = fmt.Sprintf("%s\nDELAY: %f", s, l.Delay())
+	}
+
 	s += "\n"
+
+	return s
+}
+
+// Delay checks for delayed arrival
+func (l Location) Delay() (d float64) {
+	if l.Arrival != (Event{}) {
+		if l.Arrival.AT == "" {
+			return
+		}
+
+		var form string
+		if len(l.Arrival.AT) == 5 {
+			form = "15:04"
+		} else {
+			form = "15:04:00"
+		}
+
+		actual, err := time.Parse(form, l.Arrival.AT)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		var sched string
+		if l.PTA != "" {
+			sched = l.PTA
+		} else if l.WTA != "" {
+			sched = l.WTA
+		} else {
+			return
+		}
+
+		if len(sched) == 5 {
+			form = "15:04"
+		} else {
+			form = "15:04:05"
+		}
+
+		est, err := time.Parse(form, sched)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		delta := actual.Sub(est)
+
+		d = delta.Minutes()
+	}
+
+	return
+}
+
+// Event represents an XML location event entity
+type Event struct {
+	AT  string `xml:"at,attr"`
+	ET  string `xml:"et,attr"`
+	SRC string `xml:"src,attr"`
+}
+
+func (e Event) String() string {
+	var s string
+
+	if e.AT != "" {
+		s = fmt.Sprintf("ACTUAL %s ", e.AT)
+	}
+
+	if e.ET != "" {
+		s = fmt.Sprintf("%sESTIMATED %s ", s, e.ET)
+	}
+
+	if e.SRC != "" {
+		s = fmt.Sprintf("%s (Source: %s)", s, e.SRC)
+	}
 
 	return s
 }
@@ -138,13 +230,17 @@ func main() {
 		log.Fatal(err)
 	}
 
+	if v.GetString("queue_name") == "" {
+		log.Fatal("RAIL_QUEUE_NAME is not set. Cannot recover.")
+	}
+
 	log.Print("Subscribing to queue...")
 	sub, err := conn.Subscribe(v.GetString("queue_name"), stomp.AckClient)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	for start := time.Now(); time.Since(start) < 10*time.Second; {
+	for start := time.Now(); time.Since(start) < 600*time.Second; {
 		log.Print("Waiting for message...")
 		msg := <-sub.C
 		if msg.Err != nil {
